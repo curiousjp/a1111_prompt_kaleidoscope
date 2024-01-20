@@ -1,0 +1,11 @@
+{
+    "steps": 20,
+    "prompt": {
+        "extremely detailed CG unity 8k wallpaper":1.1,
+	    "an extremely delicate and beautiful":1.1,
+        "best quality": 1.1,
+        "ultra-detailed": 1.1,
+        "best illustration": 1.1,
+        "best shadow": 1.1
+    }
+}
