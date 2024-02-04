@@ -6,7 +6,7 @@ import glob
 import argparse
 import os.path
 
-from common import PromptDict, MergeType, k_camera_angles, falloff_randint
+from common import PromptDict, MergeType, k_camera_angles, falloff_randint, roll
 from hooks import applyHooksFor
 from scenarios import scenario_list
 from decoration import decorate, decorateByName, applyDefaultDecorations
@@ -49,6 +49,8 @@ def merge_spec_with_preset_file(spec, preset_filename):
 def stringify_weights(v):
     def format_term(t,w):
         t = t.replace("'", "")
+        if t.startswith('embed:'):
+            t = t[6:]
         if t.startswith('lora:'):
             return f'<{t}:{w:.02f}>'
         elif w != 1:
@@ -102,17 +104,6 @@ def main(args):
     }
     generation_spec_master['prompt'] = PromptDict()
 
-    # include any forced terms
-    if args.force_term:
-        for forced_item in args.force_term:
-            if ':' in forced_item:
-                forced_term, forced_weight = forced_item.rsplit(':', 1)
-            else:
-                forced_term = forced_item
-                forced_weight = 1
-            forced_weight = float(forced_weight)
-            generation_spec_master['prompt'].merge({forced_term: forced_weight})
-
     # load merge in any provided json presets
     for preset in args.presets:
         generation_spec_master = merge_spec_with_preset_file(generation_spec_master, preset)
@@ -140,24 +131,31 @@ def main(args):
             generation_spec = scenario_function(generation_spec)
         generation_spec = applyHooksFor(generation_spec, 'post_apply_scenario', args)
 
+        generation_flags = generation_spec.get('flags', {})
+
         # if there is a known camera angle present in the prompt, use it to set the outer camera
+        # this weird hairball gives us 'camera' in the outer dictionary if we want to use it later
+        # and also removes any clashing angles by only keeping the last one... really should be
+        # part of a larger de-contention piece
         for angle in k_camera_angles:
             # angles in prompt overwrite external setting
             if generation_spec['prompt'].get(angle, 0) > 0:
                 generation_spec['camera'] = angle
+                del(generation_spec['prompt'][angle])
         # if the outer camera is still not set, choose at random
         if 'camera' not in generation_spec:
             generation_spec['camera'] = random.choice(k_camera_angles)
         # reintroduce the camera into the prompt (I know this is odd)
         generation_spec['prompt'].merge({generation_spec['camera']: 1}, mode = MergeType.REPLACE)
         generation_spec = applyHooksFor(generation_spec, 'post_apply_camera', args)
-
-        # apply the default decoration package
-        generation_spec = applyDefaultDecorations(generation_spec)
+        
+        # apply the default decoration package if asked for
+        if generation_flags.get('receive_default_decorations', True):
+            generation_spec = applyDefaultDecorations(generation_spec, selection_decay = args.selection_decay)
         # add decorations, reducing the weight exponentially as we go
         for decoration_index in range(args.decoration_rate + generation_spec.get('bonus_decorations', 0)):
-            decoration_weight = pow(0.8, decoration_index)
-            generation_spec = decorate(generation_spec, decoration_weight)
+            decoration_weight = pow(args.decoration_decay, decoration_index)
+            generation_spec = decorate(generation_spec, decoration_weight, selection_decay = args.selection_decay)
         # additional decorations can be forced by name
         for forced_decoration in args.decorate_by_name:
             if ':' in forced_decoration:
@@ -166,35 +164,33 @@ def main(args):
                 forced_term = forced_decoration
                 forced_weight = 1
             forced_weight = float(forced_weight)
-            generation_spec = decorateByName(generation_spec, forced_term, forced_weight)
+            generation_spec = decorateByName(generation_spec, forced_term, forced_weight, selection_decay = args.selection_decay)
         generation_spec = applyHooksFor(generation_spec, 'post_apply_decoration', args)
 
         # subject management
         if 'subjects' not in generation_spec:
-            generation_spec['subjects'] = {'girl': falloff_randint(1,3), 'boy': falloff_randint(0,2)}
+            generation_spec['subjects'] = {}
         headcount = sum(generation_spec['subjects'].values())
         subject_prompts = {}
         if headcount > 1:
             subject_prompts['multiple people'] = 1
-        else:
+        elif headcount == 1:
             subject_prompts['solo'] = 1
             subject_prompts['solo focus'] = 1
         if generation_spec['subjects'].get('girl', 0) > 1:
             subject_prompts['multiple girls'] = 1
         if generation_spec['subjects'].get('boy', 0) > 1:
             subject_prompts['multiple boys'] = 1
-        if generation_spec['subjects'].get('girl', 0) == generation_spec['subjects'].get('boy', 0):
-            subject_prompts['couple'] = 1
         
         for subject_key, subject_value in generation_spec['subjects'].items():
             if subject_value == 0:
                 continue
             sub_value_str = str(subject_value) if subject_value < 6 else '6+'
             sub_key_str = f'{sub_value_str}{subject_key}' if subject_value == 1 else f'{sub_value_str}{subject_key}s'
-            subject_prompts[sub_key_str] = 1.5
+            subject_prompts[sub_key_str] = 1
         if headcount == 1:
             generation_spec['prompt'].merge({'looking at viewer': 1})
-        else:
+        elif headcount > 1 and roll(3):
             generation_spec['prompt'].merge({'looking at another': 1})
         generation_spec = applyHooksFor(generation_spec, 'post_apply_subject_management', args)
 
@@ -222,7 +218,10 @@ def main(args):
             val = generation_spec['prompt'].get(key, 0)
             # drop loras without 'XL' in them if xlsafe is turned on
             if args.xlsafe and key.startswith('lora:') and 'XL' not in key:
-                continue
+                xl_replace = config_store.get('xl_replace', {})
+                key = xl_replace.get(key, None)
+                if not key:
+                    continue
             if val > 0:
                 positive_prompt.merge({key:val}, mode = MergeType.BLEND)
             elif val < 0:
@@ -231,16 +230,32 @@ def main(args):
         generation_spec['negative_prompt'] = negative_prompt
         generation_spec = applyHooksFor(generation_spec, 'post_split_prompts', args)
 
+        if args.fix_weights != None:
+            generation_spec['prompt'] = PromptDict({k:args.fix_weights for k,v in generation_spec['prompt'].items()})
+            generation_spec['negative_prompt'] = PromptDict({k:args.fix_weights for k,v in generation_spec['negative_prompt'].items()})
+
+        # include any forced terms
+        if args.force_term:
+            for forced_item in args.force_term:
+                if ':' in forced_item:
+                    forced_term, forced_weight = forced_item.rsplit(':', 1)
+                else:
+                    forced_term = forced_item
+                    forced_weight = 1
+                forced_weight = float(forced_weight)
+                generation_spec['prompt'].merge({forced_term: forced_weight}, mode = MergeType.REPLACE)
+
         # weight caps for terms prone to overloading
         safeties = config_store.get('safeties', {})
 
         lora_pos = [x for x in generation_spec['prompt'].keys() if x.startswith('lora:')]
         lora_neg = [x for x in generation_spec['negative_prompt'].keys() if x.startswith('lora:')]
 
-        embd_pos = [x for x in generation_spec['prompt'].keys() if x in embeddings]
-        embd_neg = [x for x in generation_spec['negative_prompt'].keys() if x in embeddings]
+        embd_pos = [x for x in generation_spec['prompt'].keys() if x in embeddings or x.startswith('embed:')]
+        embd_neg = [x for x in generation_spec['negative_prompt'].keys() if x in embeddings or x.startswith('embed:')]
         
         # first pass - deal with any individual strength caps on overloadable elements
+        # the default strength cap per term where unspecified is 1.8
         for overloadable_term in (lora_pos + embd_pos):
             generation_spec['prompt'][overloadable_term] = min(safeties.get(overloadable_term, 1.8), generation_spec['prompt'][overloadable_term])
         for overloadable_term in (lora_neg + embd_neg):
@@ -253,17 +268,13 @@ def main(args):
                 if total > cap_weight:
                     return cap_weight / total
                 return 1.0
-            multiplier = get_strength_multiplier(generation_spec['prompt'], lora_pos, args.lora_cap)
-            for term in lora_pos:
+            
+            multiplier = get_strength_multiplier(generation_spec['prompt'], (lora_pos + embd_pos), args.lora_cap)
+            for term in (lora_pos + embd_pos):
                 generation_spec['prompt'][term] *= multiplier
-            multiplier = get_strength_multiplier(generation_spec['prompt'], embd_pos, args.lora_cap)
-            for term in embd_pos:
-                generation_spec['prompt'][term] *= multiplier
-            multiplier = get_strength_multiplier(generation_spec['negative_prompt'], lora_neg, args.lora_cap)
-            for term in lora_neg:
-                generation_spec['negative_prompt'][term] *= multiplier
-            multiplier = get_strength_multiplier(generation_spec['negative_prompt'], embd_neg, args.lora_cap)
-            for term in embd_neg:
+
+            multiplier = get_strength_multiplier(generation_spec['negative_prompt'], (lora_neg + embd_neg), args.lora_cap)
+            for term in (lora_neg + embd_neg):
                 generation_spec['negative_prompt'][term] *= multiplier
 
         # prompt dynamic compression
@@ -284,10 +295,6 @@ def main(args):
         # pick a cfg value
         generation_spec['cfg_scale'] = random.randint(10,15)/2.0
         
-        if args.fix_weights != None:
-            generation_spec['prompt'] = {k:args.fix_weights for k,v in generation_spec['prompt'].items()}
-            generation_spec['negative_prompt'] = {k:args.fix_weights for k,v in generation_spec['negative_prompt'].items()}
-
         for dwell_index in range(args.dwell):
             generation_spec['seed'] = seed
             if args.height_swizzle:
@@ -337,6 +344,7 @@ if __name__ == '__main__':
     parser.add_argument('--batch_size', nargs = '?', type = int, default = 1)
     parser.add_argument('--crush', nargs = '?', type = float, default = None)
     parser.add_argument('--decorate_by_name', nargs = '*', type = str, default = [])
+    parser.add_argument('--decoration_decay', nargs = '?', type = float, default = 1)
     parser.add_argument('--decoration_rate', nargs = '?', type = int, default = 0)
     parser.add_argument('--degrade_prompt', nargs = '?', type = float, default = 1)
     parser.add_argument('--dump', default = False, action = 'store_true')
@@ -354,6 +362,7 @@ if __name__ == '__main__':
     parser.add_argument('--scenario_pool', nargs = '*', type = str)
     parser.add_argument('--scenario_rate', nargs = '?', type = int, default = 1)
     parser.add_argument('--seed', nargs = '?', type = int, default = -1)
+    parser.add_argument('--selection_decay', nargs = '?', type = float, default = 0.2)
     parser.add_argument('--shuffle_prompt', default = False, action = 'store_true')
     parser.add_argument('--step', nargs = '?', type = int, default = 0)
     parser.add_argument('--xlsafe', default = False, action = 'store_true')

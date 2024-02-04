@@ -1,4 +1,16 @@
 {
 	"safety": {
-	}
+		"lora:alch - Alex Chow Style": 0.7
+	},
+	"xl_replace": {
+		"lora:add_detail": "lora:add-detail-xl",
+		"lora:Arcane_Ruins-000009": "lora:Arcane_Ruins_XL",
+		"lora:眼睛双": "lora:DetailedEyes_V3"
+	},
+	"embed_path": "/mnt/sd/webui/embeddings/",
+	"large_number": 4294967294,
+	"base_dimension": 512,
+	"long_dimension": 720,
+	"short_dimension": 512,
+	"mega_multiplier": 2.0
 }

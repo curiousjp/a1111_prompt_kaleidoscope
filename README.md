@@ -4,9 +4,9 @@ a command line tool for the large-scale generation of prompts for stable diffusi
 ## overview
 This program generates random prompts by combining JSON documents containing information about a proposed generation (called a 'generation shell'), running functions over this shell that represent 'scenarios', applying further but less state-oriented modifications known as 'decorations', and finally rendering the shell into a string compatible with a1111's 'prompts from file or textbox' script or my own [a1111_xyzabc](https://github.com/curiousjp/a1111_xyzabc). 'scenarios' and 'decorations' use a simple plug-in style architecture, and a hook system provides additional control.
 
-The plug-in system revolves around dynamically loading python code and running the functions found within - you should never install a plugin that you have not either written or read and completely understood. There is no sandboxing.
+The plug-in system revolves around dynamically loading python code and running the functions found within - you should never install a plugin unless you either wrote it yourself or you have read it from end to end and understand everything it does. There is no sandboxing unless you provide it yourself.
 
-The ability to inspect the terms of the prompt as it is created and to carry out flow control accordingly provides some advantages compared to existing wildcard solutions. A number of additional options are also provided to further permute the generated prompts.
+The ability to inspect the terms of the prompt as it is created and to carry out control flow decisions accordingly provides some advantages compared to existing wildcard solutions. A large number of additional options are also provided to further permute the generated prompts.
 
 ## example
 ```
@@ -17,9 +17,14 @@ $ python promptgen.py --generations 2 --lora_cap 1 json/default-scene.json json/
 --batch_size 1 --n_iter 1 --steps 20 --prompt '[scenario_tag portrait::-1] solo, solo focus, (1girl:1.50), (sfw:1.50), (clothed:1.50), painting \(object\), (framed image:1.50), (portrait:1.50), front view, straight-on, (watercolor \(medium\):1.50), (short hair:1.40), (spacewalk:1.40), (sportswear:1.40), private club, (red-framed eyewear:0.80), (glasses:0.80), looking at viewer' --width 512 --height 768 --negative_prompt '(nsfw:1.50), (nude:1.50), animal ears, dog ears, cat ears' --cfg_scale 5.5 --seed 1174320052
 ```
 
-Note the scenario_tag uses a1111's [prompt editing syntax](https://github.com/AUTOMATIC1111/stable-diffusion-webui/wiki/Features#prompt-editing) to allow metadata like `scenario_tag place` to be injected into the prompt (for ease of searching with things like [DiffusionToolkit](https://github.com/RupertAvery/DiffusionToolkit)) without also altering the generation itself. Following generation with `hiresfix`, `adetailer` and a stock a1111 quality improving style, the following two images were produced:
+Note the scenario_tag uses a1111's [prompt editing syntax](https://github.com/AUTOMATIC1111/stable-diffusion-webui/wiki/Features#prompt-editing) to allow metadata like `scenario_tag place` to be injected into the prompt (for ease of searching with things like [DiffusionToolkit](https://github.com/RupertAvery/DiffusionToolkit)) without also altering the generation itself. Following generation with `hiresfix`, `adetailer` and a model-appropriate a1111 style, the following two images were produced:
 
 ![Side by side examples.](README-sample.png)
+
+## my recommendations
+Despite all of the settings for weight permutation provided, I tend to just fix term weights at one, generating prompts with something like the following: `python promptgen.py --generations 10 --fix_weights 1 --lora_cap 2.0 --crush 1.3 chars/whatever.json`
+
+However, all the command line arguments were created to address something I wanted at least once, so read on for more information.
 
 ## command line arguments
 `promptgen` requires at least one json file to serve as the base for the generation (although it could in principle be empty). The other command line switches are optional.
@@ -28,51 +33,58 @@ Note the scenario_tag uses a1111's [prompt editing syntax](https://github.com/AU
 Controls the `batch_size` output flag, which allows for parallel generation when you have more VRAM available.
 
 ### --crush
-Performs range compression across the prompt and negative prompt separately. With `--crush 1.4`, the maximum strength of each term in the prompt will be scaled to 1.4 - this may be a scale up or a scale down depending on your original strengths. Useful to protect against (or force) weight blowouts.
+Performs range compression across the prompt and negative prompt separately. With `--crush 1.4`, the maximum strength of each term in the prompt will be scaled to 1.4 - this may be a scale up or a scale down depending on your original strengths. Useful to protect against (or force) weight blowouts. The positive and negative prompts are scaled separately.
 
 ### --decorate_by_name
 Will apply a decoration, for example, `decorations_Settings` to your shells. This is in addition to any other decorations mandated by a scenario or the decoration rate.
 
+### --decoration_decay
+When decorations are applied through the `--decoration_rate` argument or the `bonus_decorations` key in a scenario, you can have them applied in increasingly lower strengths by specifying a `decoration_decay` less than 1.0. For example, at 0.8 (the old default), the first of these decorations will receive a weight multiplier of 0.8, the second 0.64, then 0.51, etc (i.e. the strength of the *n*th decoration is `decoration_decay` raised to the *n*th power.)
+
 ### --decoration_rate
-Sets the 'decoration rate', or how many random decorations are applied to each generation. The default is zero. This is in addition to any decorations mandated by a scenario or `--decorate_by_name`.
+Sets the 'decoration rate', or how many random decorations are applied to each generation. The default is zero. This is in addition to any decorations mandated by a scenario, added to the `bonus_decorations` count by a scenario, or manually specified by the user with `--decorate_by_name`.
 
 ### --degrade_prompt
-Deletes a random fraction of prompt terms from the positive prompt only. At `--degrade_prompt 0.5`, 50% of terms will be deleted. Generally does not touch the subject related or camera angle prompt terms as these are not 'in' the positive prompt at the time the change is made - for more info on these topics, see the discussion on 'scenarios' below.
+Deletes a random fraction of prompt terms from the positive prompt only. At `--degrade_prompt 0.5`, 50% of terms will be deleted. Will not touch terms created from the 'subjects' dictionary as these are not integrated into the positive prompt until after this change is made - for more information see the discussion on 'scenarios' below.
 
 ### --dump
 Provides simplified output more suited to copying and pasting directly into the UI.
 
 ### --dwell
-Generates additional batch generation output for each shell, iterating the random seed if required.
+Generates additional batch generation output for each shell, iterating the random seed if required. See also `--iterations` - this allows for larger seed steps if desired.
 
 ### --fix_weights
-Overrides the weights in the prompt (including subject weights). Usually done with `--fix_weights 1.0` for a tidier prompt. Mainly a testing feature.
+Overrides the weights of the generated prompt (including subject weights). Usually done with `--fix_weights 1.0` to produce neater output. Designed as a testing feature, has become part of my standard workflow. Weights are fixed before lora and embed strength capping takes place, before forced terms are injected, and before crushing is applied, so these features are still respected.
 
 ### --force_term
-Manually injects a term into the prompt (although it might later be removed by `--degrade_prompt` or cancelled out by a 'scenario' or 'decoration'). Can either be a bare prompt, `--force_term moon` or a term and weight, `--force_term moon:0.5`.
+Manually injects a term into the prompt - this is done after scenarios, decoration, weight fixing, heat, degrade etc, but before lora and embed strength capping and crushing. Can either be a bare term, `--force_term moon` or a term and weight, `--force_term moon:0.5`.
 
 ### --generation
 The number of shells to generate.
 
 ### --heat
-Randomly perturbs term weights in the prompt. With a heat of 0.2, each term is multiplied by a random weight between 0.8 and 1.2.
+Randomly perturbs term weights in the prompt. With a heat of 0.2, the weight of each term is multiplied by a random number between 0.8 and 1.2.
 
 ### --height_swizzle
-Will force the height and weight for the image in the resulting output, and then create three variants for each shell - one square (default 512x512), one portrait (364x720), one landscape (720x364). These can be overridden by setting the `base_dimension`, `long_dimension`, and `short_dimension` keys in 'config.json'.  See also `--mega`.
+Will force the height and weight for the image in the resulting output, and then create three variants for each shell - one square (default 512x512), one portrait (364x720), one landscape (720x364). These sizes can be overridden by setting the `base_dimension`, `long_dimension`, and `short_dimension` keys in 'config.json'.  See also the related switch, `--mega`.
 
 ### --iterations
-Directly controls the `n_iter` value in the resulting output, causing a1111 to generate successive images, iterating the seed on each one.
+Directly controls the `n_iter` value in the resulting output, causing a1111 to generate successive images, iterating the seed by one for each. See also `--dwell`.
 
 ### --lora_cap
-Provides a separate mechanism similar to `--crush`, but only applied to 'terms at risk of overloading' - LORA and embeddings. When it is enabled, the total weight of all overloadable terms is scaled to this amount. This scaling is done separately for LORA, embeds, and for each of the positive and negative prompts separately (four separate calculations). Embeddings are detected by setting the `embed_path` key to your embedding folder in 'config.json'.
+Provides a similar mechanism to `--crush`, but only applied to terms at risk of overloading and blowing out the result - LORA and embeddings. When it is enabled, the total weight of all overloadable terms in the positive and negative terms (separately) are calculated and then scaled to fall under this value.
 
-Overloadable terms are actually subject to another, separate capping mechanism that runs regardless of whether `--lora_cap` is enabled - no detected LORA or embedding is allowed to exceed an immediate strength of 1.8 or whatever strength is set for it by a `safeties` dictionary key inside 'config.json'.
+As an example, a positive prompt containing `lora:1.6` and `embedding:0.8` and subject to a `--lora_cap 1.2` will be modified to contain `lora:0.8` and `embedding:0.4`. A positive prompt containing `lora:1.0` and `embedding:0.1` would be unchanged. The same procedure would be carried out on the negative prompt separately.
+
+Embeddings are detected by setting the `embed_path` key to your embeddings folder in 'config.json', or by prefacing the term with `embed:`.
+
+Overloadable terms are also subject to another, separate capping mechanism that runs before `--lora_cap` and regardless of whether or not it is enabled - no identified LORA or embedding is allowed to exceed an immediate strength of 1.8 or whatever strength is set for it by a `safeties` dictionary key inside 'config.json'.
 
 ### --mega
 Only active if `--height_swizzle` is enabled, this will create one additional picture with a width and height of the `base_dimension` multiplied by the `mega_multiplier` from 'config.json' (default 2.0).
 
 ### --rngseed
-Seeds the random number generator.
+Seeds the random number generator for the entire execution - can be used to generate consistent prompt sets with different values for `--lora_cap`, `--xlsafe` etc.
 
 ### --rotator
 Allows you to provide multiple json files that will be rotated through as generations are created.
@@ -82,6 +94,11 @@ Lets you limit the available scenarios for generation.
 
 ### --scenario_rate
 Allows for multiple scenarios to be applied to a single shell. Almost never what you want, unless what you want is chaos.
+
+### --selection_decay
+An experimental (but enabled by default!) feature to force your generations to explore more of the decoration space - if this is set to a value less than 1.0 (and the new default is 0.2), each time a decoration endpoint is selected, its weight in the decoration is multiplied down by this value. Because of the way that decorations are nested, this also impacts any parent decorations that were traversed to get to the selected endpoint.
+
+The changes to weights persist until the end of the program execution, so subsequent generations in the same run are less likely to select the previously selected decorations. This should promote more varied prompts per run.
 
 ### --shuffle_prompt
 Will shuffle your prompt keys (negative and positive) but not the subject keys.

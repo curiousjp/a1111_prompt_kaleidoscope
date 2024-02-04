@@ -43,22 +43,22 @@ for decoration_name, decoration_object in decoration_list.items():
     if decoration_object.desired_root_weight:
         decoration_root.add_child(decoration_object, decoration_object.desired_root_weight)
 
-def applyDefaultDecorations(generation_spec, multiplier = 1.4):
+def applyDefaultDecorations(generation_spec, multiplier = 1.3, selection_decay = 1.0):
     default_decorations = [v for v in decoration_list.values() if v.default]
     for default_decoration in default_decorations:
-        generation_spec = decorateByObject(generation_spec, default_decoration, multiplier)
+        generation_spec = decorateByObject(generation_spec, default_decoration, multiplier, selection_decay)
     return generation_spec
 
-def decorateByObject(generation_spec, decorator, multiplier = 1):
-    decoration_pieces = {k:(v * multiplier) for k, v in decorator.select().items()}
+def decorateByObject(generation_spec, decorator, multiplier, selection_decay):
+    decoration_pieces = {k:(v * multiplier) for k, v in decorator.select(selection_decay).items()}
     generation_spec['prompt'].merge(decoration_pieces)
     return generation_spec
 
-def decorateByName(generation_spec, decoratorName, multiplier = 1):
+def decorateByName(generation_spec, decoratorName, multiplier = 1, selection_decay = 1.0):
     decorator_object = decoration_list[decoratorName]
-    return decorateByObject(generation_spec, decorator_object, multiplier)
+    return decorateByObject(generation_spec, decorator_object, multiplier, selection_decay)
 
-def decorate(generation_spec, multiplier = 1):
-    return decorateByObject(generation_spec, decoration_root, multiplier)
+def decorate(generation_spec, multiplier = 1, selection_decay = 1.0):
+    return decorateByObject(generation_spec, decoration_root, multiplier, selection_decay)
 
 __all__ = [applyDefaultDecorations, decorateByName, decorate]

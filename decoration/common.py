@@ -29,8 +29,10 @@ class DecorationNode:
         self._children.append(new_child)
         self._weights.append(new_weight)
 
-    def select(self):
+    def select(self, selection_decay = 1.0):
         selection = random.choices(self._children, weights = self._weights, k = 1)[0]
+        selection_index = self._children.index(selection)
+        self._weights[selection_index] *= selection_decay
         if isinstance(selection, DecorationNode):
             value = selection.select()
         else:
